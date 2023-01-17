@@ -1,0 +1,429 @@
+<html>
+
+<head>
+  <style>
+    .left-box {
+      float: left;
+      width: 30%;
+      height: 98%;
+    }
+
+    .right-box {
+      float: right;
+      width: 70%;
+      height: 98%;
+    }
+
+    textarea {
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+  <script>
+    const checkboxIdArr = [
+      "input#isColumn",
+      "input#isColLength",
+      "input#isNullAble",
+      "input#isComment",
+      "input#isNonNull",
+      "input#isIncludeBaseField"
+    ];
+
+    document.addEventListener("DOMContentLoaded", () => {
+      const inputTextEl = document.querySelector("textarea#inputText");
+      const outputEntityTextEl = document.querySelector("textarea#outputEntityText");
+      const outputBuilderTextEl = document.querySelector("textarea#outputBuilderText");
+      const outputMethodTextEl = document.querySelector("textarea#outputMethodText");
+      const outputParameterTextEl = document.querySelector("textarea#outputParameterText");
+
+      inputTextEl.addEventListener("keyup", columnToVoEvent);
+      outputEntityTextEl.addEventListener("click", outputClickEvent);
+      //outputBuilderTextEl.addEventListener("click", outputClickEvent);
+      outputMethodTextEl.addEventListener("click", outputClickEvent);
+      //outputParameterTextEl.addEventListener("click", outputClickEvent);
+
+      for (const domId of [...checkboxIdArr, "select#builderOption"]) {
+        const dom = document.querySelector(domId);
+        dom.addEventListener("change", columnToVoEvent.bind(inputTextEl));
+      }
+
+    });
+
+    function outputClickEvent() {
+      this.select();
+    }
+
+    // exerd String을 Java Entity컬럼소스로 변환하여 출력.
+    function columnToVoEvent() {
+      const outputEntityTextEl = document.querySelector("textarea#outputEntityText");
+      const outputBuilderTextEl = document.querySelector("textarea#outputBuilderText");
+      const outputMethodTextEl = document.querySelector("textarea#outputMethodText");
+      const outputParameterTextEl = document.querySelector("textarea#outputParameterText");
+      const ouputColListTextEl = document.querySelector("textarea#ouputColListText");
+
+      const colObjList = parseColList(this.value)
+          .filter((str) => !!str)
+          .map(parseColObject)
+          .filter(commonColFilter)
+      ;
+      window.colObjList = colObjList;
+      window.option = outputOption();
+
+      outputEntityTextEl.value = colObjList.map(generateEntityMap(option))
+      .join("\n\n");
+      outputBuilderTextEl.value = colObjList.filter(builderFilter(option))
+									      .map(generateBuilderMap)
+									      .join("\n") 
+									  + "\n\n\n\n\n" +
+									  colObjList.filter(builderFilter(option))
+								      .map(generateBuilderMap2)
+								      .join("\n");
+
+      const colObjNonNullList = colObjList.filter(obj => !obj.isNullAble);
+      const outputMethodTextElValue = colObjNonNullList.map(generateMethodMap).join("\n");
+      outputMethodTextEl.value = outputMethodTextElValue.substring(0, outputMethodTextElValue.lastIndexOf(",")) + outputMethodTextElValue.substring(outputMethodTextElValue.lastIndexOf(",")+1);
+      outputParameterTextEl.value = colObjNonNullList.map(obj => obj.col.camelCase()).join(", ")
+          + "\n\n\n"
+          + colObjNonNullList.map(obj => obj.col.camelCase()).join(",\n")
+          + "\n\n\n"
+          + colObjNonNullList.map(obj => `${obj.col.camelCase()}, // ${obj.colNm}`).join("\n");
+      
+      ouputColListTextEl.value = colObjList.map(obj => `${obj.col}${option.isComment ? ` // ${obj.colNm}` : ""}`).join("\n") + "\n\n\n"
+          + colObjList.map(obj => `${obj.col.camelCase()}${option.isComment ? ` // ${obj.colNm}` : ""}`).join("\n") + "\n\n\n"
+          + colObjList.map(obj => `${obj.col.upperCamelCase()}${option.isComment ? ` // ${obj.colNm}` : ""}`).join("\n") + "\n\n\n"
+          + colObjList.map(obj => `this.${obj.col.camelCase()} = _entity_.get${obj.col.upperCamelCase()}();${option.isComment ? ` // ${obj.colNm}` : ""}`).join("\n") + "\n\n\n"
+          + colObjList.map(generateQueryDSL).join("\n\n") + "\n\n\n"
+      ;
+      document.querySelector("span#errorMessage").innerText = "";
+      console.log("array 객체명 : colObjList");
+      colObjList.length && console.log("key목록 : " + Object.keys(colObjList[0]).join(", "));
+    }
+
+    
+    function generateQueryDSL(obj) {
+      const colCamelCase = obj.col.camelCase();
+      const isEquals = obj.col.endsWith("CD") || obj.isPK;
+      const isYn = obj.col.startsWith("is_");
+      const isType = obj.col.endsWith("_type");
+      const valueType = Vo.valueType(obj, {isColumn: true})
+      return [
+          `/** ${obj.colNm} */`,
+          `private Predicate ${colCamelCase}${isEquals || isYn ? "Eq" : "Like"}(${valueType} ${colCamelCase}) {`,
+          `\treturn ${generateQueryDSLPredicate(isEquals, isYn, colCamelCase, valueType)} ? null : _QEntity_._entity_.${colCamelCase}.${isEquals ? "eq" : "contains"
+      }(${colCamelCase});`,
+          `}`
+      ].join("\n")
+    }
+    
+    function generateQueryDSLPredicate(isEquals, isYn, colCamelCase, valueType) {
+    	if(valueType != "String") {
+    		return `${colCamelCase} == null`;
+    	}
+    	if (isEquals || isYn) {
+    		return `PredicateUtils.isAll(${colCamelCase})`;
+    	}
+    	return `StringUtils.isEmpty(${colCamelCase})`;
+    }
+
+    // check박스들을 Object로 리턴.
+    function outputOption() {
+      const result = {};
+      for (const domId of checkboxIdArr) {
+        const dom = document.querySelector(domId);
+        result[dom.id] = dom.checked;
+      }
+      return result;
+    }
+
+    // 여러줄을 배열로 변경.
+    function parseColList(value) {
+      return value
+      .replaceAll("(FK)", "")
+      .replaceAll("NOT NULL", "NOT_NULL")
+      .split("\n");
+    }
+
+    function commonColFilter(obj) {
+    	const isIncludeBaseField = !!document.querySelector("input#isIncludeBaseField").checked;	
+    	if(isIncludeBaseField) {
+    		return true;
+    	}
+    	
+      switch (obj.col) {
+        case "ROW_STS_CD":
+        case "REG_NO":
+        case "REG_DT":
+        case "UPD_NO":
+        case "UPD_DT":
+          return false;
+        default:
+          return true;
+      }
+    }
+
+    // 한 라인을 파싱해서 Object로 리턴
+    function parseColObject(value) {
+      const fieldArr = value.split("\t");
+      let colIndex = 0;
+      let colNmIndex = 1;
+
+      if (fieldArr.length != 5) {
+        document.querySelector("span#errorMessage").innerText = "논리/물리 동시편집으로 복사 후 붙여넣기해주세요.";
+        throw Error("논리/물리 동시편집으로 복사 후 붙여넣기해주세요.");
+      }
+      if (fieldArr[0].isHangul()) {
+        colIndex = 1;
+        colNmIndex = 0;
+      }
+
+      return {
+        ...Col.colAndIsPK(fieldArr[colIndex]),
+        colNm: Col.colNm(fieldArr[colNmIndex]),
+        domain: fieldArr[2],
+        ...Col.colTypeAndLength(fieldArr[3]),
+        ...Col.isNullAble(fieldArr[4]),
+      };
+    }
+
+    const Col = {
+      // 물리명, PK여부		
+      colAndIsPK(value) {
+        if (value.indexOf("(PK)") == -1) {
+          let isYn = false;
+          if (value.startsWith("is_")) {
+            isYn = true;
+          }
+          let isType = false;
+          if (value.endsWith("_type")) {
+            isType = true;
+          }
+          return {col: value, isPK: false, isYn: isYn, isType: isType};
+        }
+        return {col: value.replace("(PK)", ""), isPK: true, isYn: false, isType: false};
+      },
+      colNm(colNm) {
+        return colNm.replace("(PK)", "");
+      },
+      // 데이터타입
+      colTypeAndLength(value) {
+        let colType = null;
+        let colLength = 0;
+        if (value.startsWith("VARCHAR")) {
+          colType = "VARCHAR";
+          colLength = parseInt(
+              value.substring(value.indexOf("(") + 1, value.indexOf(")"))
+          );
+        } else if (value.startsWith("NUMERIC")) {
+          colType = "NUMERIC";
+        } else {
+          colType = value;
+        }
+
+        return {
+          colType: colType,
+          colLength: colLength,
+        };
+      },
+      // 널 여부
+      isNullAble(value) {
+        return {isNullAble: value == "NULL" ? true : false};
+      },
+    };
+
+    function generateEntityMap(option) {
+      const _dummy = () => "";
+      const _comment = option.isComment ? Vo.comment : _dummy;
+      return function (obj) {
+        return `${Vo.annotation(obj, option)}private ${Vo.valueType(obj, option)} ${obj.col.camelCase()};${_comment(obj)}`;
+      };
+    }
+
+    function builderFilter(option) {
+      var builderOption = document.querySelector("select#builderOption").value;
+      return function (obj) {
+        if (builderOption == "NonNull" && obj.isNullAble) {
+          return false;
+        }
+        if (builderOption == "NullAble" && !obj.isNullAble) {
+          return false;
+        }
+        return true;
+      }
+    }
+
+    function generateBuilderMap(obj) {
+      const col = obj.col.camelCase();
+      return `.${col}(${col})${option.isComment ? ` // ${obj.colNm}` : ""}`;
+      // return `.${col}(${col})`;
+    }
+    
+    function generateBuilderMap2(obj) {
+        const col = obj.col.camelCase();
+        const upperCol = obj.col.upperCamelCase();
+        return `.${col}(_entity_.get${upperCol}())${option.isComment ? ` // ${obj.colNm}` : ""}`;
+        // return `.${col}(${col})`;
+      }
+
+    function generateMethodMap(obj) {
+      const col = obj.col.camelCase();
+      return `@NonNull ${Vo.valueType(obj, option)} ${col}, ${option.isComment ? ` // ${obj.colNm}` : ""}`;
+    }
+
+    const Vo = {
+      // annotation정의(@Id, @Column 등....)		
+      annotation(obj, option) {
+        const annoList = [];
+        this.columnAnnotation(annoList, obj, option);
+        this.nonNullAnnotation(annoList, obj, option)
+        return annoList.length == 0 ? "" : annoList.join("\n") + "\n";
+      },
+      nonNullAnnotation(annoList, obj, option) {
+        if (obj.isNullAble || !option.isNonNull) {
+          return;
+        }
+        annoList.push("@NonNull");
+      },
+      columnAnnotation(annoList, obj, option) {
+        if (!option.isColumn) {
+          return;
+        }
+
+        // 1. @Id  
+        if (obj.isPK) {
+          annoList.push("@Id");
+        }
+
+        // 2. @Column
+        annoList.push(this.columnOption(obj, option));
+
+        // 3. @Enumerated
+        if (obj.isYn) {
+          annoList.push("@Convert(converter = TFCodeBooleanConverter.class)");
+        }
+        // 4. @Convert(converter = LocalDateAttributeConverter.class)
+        if (obj.isType) {
+          annoList.push(`@Convert(converter = ${obj.col.camelCase().replace(/^[a-z]/, char => char.toUpperCase())}.Converter.class)`);
+        }
+      },
+      // @Column 정의.
+      columnOption(obj, option) {
+        const colList = [];
+        colList.push(`name = "${obj.col}"`);
+        if (option.isColLength) {
+          if (obj.colType === "VARCHAR") {
+            colList.push(`length = ${obj.colLength}`);
+          }
+        }
+        if (option.isNullAble && !obj.isNullAble) {
+          colList.push(`nullable = ${obj.isNullAble}`);
+        } 
+
+        return `@Column(${colList.join(", ")})`;
+      },
+      // 주석여부에 따른 처리
+      javaDocComment({colNm}) {
+        return `/* ${colNm} */` + "\n";
+      },
+      // 주석여부에 따른 처리
+      comment({colNm}) {
+        return ` // ${colNm}`;
+      },
+      // java 변수타입
+      valueType(obj, option) {
+        // if (obj.isYn) {
+        //   return "UseYn";
+        // }
+        if (option.isColumn && isDateString(obj)) {
+          return "ZonedDateTime";
+        }
+        if (obj.col.startsWith("is_")) {
+          return "boolean"; 
+        }
+
+        if (obj.colType.startsWith("numeric")) {
+          return "BigDecimal";
+        }
+        if (obj.colType ==="int8") {
+          return "Long";
+        }
+        if (obj.colType.startsWith("int")) {
+          return "Integer";
+        }
+
+          
+        return "String";    
+      },
+    };
+
+    function isDateString(obj) {
+      return obj.colType.startsWith("timestamptz");
+    }
+
+    String.prototype.camelCase = function () {
+      return this.toLowerCase().replace(/_+(\w|$)/g, function ($$, $1) {
+        return $1.toUpperCase();
+      });
+    }
+
+    String.prototype.upperCamelCase = function () {
+      const camelCaseStr = this.camelCase();
+      return camelCaseStr.substring(0, 1).toUpperCase() + camelCaseStr.substring(1);
+    }
+
+    String.prototype.replaceAll = function (org, dest) {
+      return this.split(org).join(dest);
+    }
+
+    String.prototype.isHangul = function (org, dest) {
+      const check = /[ㄱ-ㅎ|ㅏ-ㅣ|가-힣]/;
+      return check.test(this)
+    }
+  </script>
+</head>
+
+<body>
+<div id="header">
+  <div id="left" style="display: inline-block;">
+    <input type="checkbox" id="isColumn" checked/>@Column
+    <input type="checkbox" id="isColLength" checked style="display:none;"/>
+    <input type="checkbox" id="isNullAble" checked style="display:none;"/>
+    <!--변수명 변경 및 소스정리 해야하는부분~~~~
+      <input type="checkbox" id="isColumn" checked />@Id
+      (
+      <input type="checkbox" id="isColLength" checked />length
+      <input type="checkbox" id="isNullAble" checked />nullable
+      )
+    -->
+    <input type="checkbox" id="isNonNull"/>@NonNull
+    <input type="checkbox" id="isComment" checked/>주석
+    <input type="checkbox" id="isIncludeBaseField"/>BaseEntity포함 
+    <span id="errorMessage" style="margin-left: 300px; font-weight: bold; color: red;"></span>
+  </div>
+  <div id="right" style="float: right;">
+    Builder :
+    <select id="builderOption" style="float: right;">
+      <option>All (NonNull + NullAble)</option>
+      <option value="NonNull">NonNull</option>
+      <option value="NullAble">NullAble</option>
+    </select>
+  </div>
+</div>
+<div id="contents">
+  <div class="left-box">
+    <textarea id="inputText" placeholder="순서) 물리이름  논리이름  도메인  데이터타입  널허용여부" style="height: 30%;"></textarea>
+    <textarea id="ouputColListText" placeholder="Column 목록" style="height: 70%; overflow:auto;" wrap="off"></textarea>
+  </div>
+  <div class="right-box">
+    <div style="float: left; width: 60%;">
+      <textarea id="outputEntityText" placeholder="Entity" style="height: 50%;"></textarea>
+      <textarea id="outputMethodText" placeholder="Method Parameter" style="height: 50%;"></textarea>
+    </div>
+    <div style="float: right; width: 40%;">
+      <textarea id="outputBuilderText" placeholder="Builder" style="height: 50%;"></textarea>
+      <textarea id="outputParameterText" placeholder="Call Parameter" style="height: 50%;"></textarea>
+    </div>
+  </div>
+</div>
+</body>
+
+</html>
